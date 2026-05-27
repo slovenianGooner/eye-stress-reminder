@@ -1,33 +1,64 @@
 #!/usr/bin/env python3
+import objc
 import rumps
 import AppKit
+from Foundation import NSObject
 
 EYE_INTERVAL = 20 * 60      # 20 min between eye rests
 EYE_REST_DURATION = 20      # 20 sec stare into distance
 BREAK_INTERVAL = 45 * 60    # 45 min between standing breaks
 BREAK_DURATION = 5 * 60     # 5 min break
 
+ICON_ACTIVE = "👁"
+ICON_PAUSED = "👁"
+
+
+class _SystemObserver(NSObject):
+    def initWithCallback_(self, cb):
+        self = objc.super(_SystemObserver, self).init()
+        if self is not None:
+            self._cb = cb
+        return self
+
+    def handleNotification_(self, notification):
+        self._cb()
+
+    @objc.python_method
+    def register(self):
+        nc = AppKit.NSWorkspace.sharedWorkspace().notificationCenter()
+        nc.addObserver_selector_name_object_(
+            self, b'handleNotification:', AppKit.NSWorkspaceDidWakeNotification, None
+        )
+        nc.addObserver_selector_name_object_(
+            self, b'handleNotification:', 'NSWorkspaceSessionDidBecomeActiveNotification', None
+        )
+
 
 class EyeStressReminderApp(rumps.App):
     def __init__(self):
-        super().__init__("", quit_button=None)
+        super().__init__(ICON_ACTIVE, quit_button=None)
         self._reset_state()
+        self.paused = False
 
-        self.eye_item = rumps.MenuItem("👁  Eye rest in  20:00")
-        self.break_item = rumps.MenuItem("🚶 Break in  45:00")
+        self.status_item = rumps.MenuItem("● Active")
+        self.status_item.set_callback(None)
+
+        self.pause_item = rumps.MenuItem("Pause", callback=self.on_pause_toggle)
 
         self.menu = [
-            self.eye_item,
-            self.break_item,
+            self.status_item,
             None,
+            self.pause_item,
             rumps.MenuItem("Reset timers", callback=self.on_reset),
             None,
             rumps.MenuItem("Quit", callback=lambda _: rumps.quit_application()),
         ]
 
-        # Plain-text initial label; colored version set on first timer tick after run()
-        self.title = "👁 20:00   🚶 45:00"
+        self._update_ui()
         rumps.Timer(self.tick, 1).start()
+
+        self._sys_observer = _SystemObserver.alloc().initWithCallback_(self._on_system_wake)
+        self._sys_observer.register()
 
     def _reset_state(self):
         self.eye_countdown = EYE_INTERVAL
@@ -37,24 +68,24 @@ class EyeStressReminderApp(rumps.App):
         self.eye_rest_left = 0
         self.break_left = 0
 
-    def _fmt(self, secs):
-        secs = max(0, int(secs))
-        return f"{secs // 60:02d}:{secs % 60:02d}"
+    def _on_system_wake(self):
+        self._reset_state()
+        self.paused = False
+        self.pause_item.title = "Pause"
+        self._update_ui()
 
-    def _set_bar(self, text, red=False):
-        color = AppKit.NSColor.redColor() if red else AppKit.NSColor.labelColor()
-        try:
-            font = AppKit.NSFont.monospacedDigitSystemFontOfSize_weight_(13, 0.0)
-        except Exception:
-            font = AppKit.NSFont.menuBarFontOfSize_(0)
-        attrs = {
-            AppKit.NSForegroundColorAttributeName: color,
-            AppKit.NSFontAttributeName: font,
-        }
-        attributed = AppKit.NSAttributedString.alloc().initWithString_attributes_(text, attrs)
-        self._nsapp.nsstatusitem.setAttributedTitle_(attributed)
+    def _update_ui(self):
+        if self.paused:
+            self.title = "👁"
+            self.status_item.title = "⏸ Paused"
+        else:
+            self.title = "👁"
+            self.status_item.title = "● Active"
 
     def tick(self, _):
+        if self.paused:
+            return
+
         if self.eye_resting:
             self.eye_rest_left -= 1
             if self.eye_rest_left <= 0:
@@ -89,29 +120,15 @@ class EyeStressReminderApp(rumps.App):
                     sound=True,
                 )
 
+    def on_pause_toggle(self, _):
+        self.paused = not self.paused
+        self.pause_item.title = "Resume" if self.paused else "Pause"
         self._update_ui()
-
-    def _update_ui(self):
-        action = self.eye_resting or self.on_break
-
-        if self.eye_resting:
-            eye_bar = f"👁 {self._fmt(self.eye_rest_left)}"
-            self.eye_item.title = f"👁  Look 20 ft away  —  {self._fmt(self.eye_rest_left)} left"
-        else:
-            eye_bar = f"👁 {self._fmt(self.eye_countdown)}"
-            self.eye_item.title = f"👁  Eye rest in  {self._fmt(self.eye_countdown)}"
-
-        if self.on_break:
-            break_bar = f"🚶 {self._fmt(self.break_left)}"
-            self.break_item.title = f"🚶 Stand up & move!  —  {self._fmt(self.break_left)} left"
-        else:
-            break_bar = f"🚶 {self._fmt(self.break_countdown)}"
-            self.break_item.title = f"🚶 Break in  {self._fmt(self.break_countdown)}"
-
-        self._set_bar(f"{eye_bar}   {break_bar}", red=action)
 
     def on_reset(self, _):
         self._reset_state()
+        self.paused = False
+        self.pause_item.title = "Pause"
         self._update_ui()
 
 
